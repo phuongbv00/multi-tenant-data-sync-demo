@@ -1,0 +1,1 @@
+{"version":3,"file":"IMessagePublisher.d.ts","sourceRoot":"","sources":["../../../src/application/interfaces/IMessagePublisher.ts"],"names":[],"mappings":"AACA,OAAO,EAAE,WAAW,EAAE,MAAM,mCAAmC,CAAC;AAEhE,MAAM,WAAW,iBAAiB;IAChC,OAAO,CAAC,KAAK,EAAE,MAAM,EAAE,MAAM,EAAE,WAAW,EAAE,GAAG,OAAO,CAAC,IAAI,CAAC,CAAC;IAC7D,UAAU,IAAI,OAAO,CAAC,IAAI,CAAC,CAAC;CAC7B"}
