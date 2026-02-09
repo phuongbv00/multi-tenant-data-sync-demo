@@ -16,17 +16,16 @@ graph LR
     subgraph "Source (Producer)"
         DB[(Source DB)] -->|Insert| BusinessTable
         DB -->|Insert| OutboxTable
-        OutboxTable -->|Poll/CDC| QueuePub[Queue Publisher]
+        OutboxTable -->|Poll/CDC| SSyncWorker[SyncWorker]
     end
 
-    QueuePub -->|Notify| EventQueue[Message Queue]
+    SSyncWorker -->|Notify| EventQueue[Message Queue]
+    EventQueue -->|Consume| SyncWorker
 
     subgraph "Destination (Consumer)"
-        EventQueue -->|Consume| SyncWorker
-        SyncWorker -->|1. Get ID| SyncWorker
-        SyncWorker -->|2. Secure Fetch| RefAPI[Source Reference API]
-        RefAPI -.->|3. Data Return| SyncWorker
-        SyncWorker -->|4. Persist| LocalDB[(Local DB)]
+        SyncWorker -->|1. Secure Fetch| RefAPI[Source Reference API]
+        RefAPI -.->|2. Data Return| SyncWorker
+        SyncWorker -->|3. Persist| LocalDB[(Local DB)]
     end
 ```
 
