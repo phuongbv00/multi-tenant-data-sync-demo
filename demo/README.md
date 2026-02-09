@@ -24,19 +24,17 @@ graph TD
         Kafka{Kafka}
     end
 
-    subgraph ConsumerSystem[Consumer System]
-        CDB[(Consumer DB)]
-    end
+    CDB[(Consumer DB)]
 
     Client -->|"REST API<br/>(User Token)"| SS_TLS
-    SS_TLS -->|Read/Write| SDB
+    SS_TLS -->|RLS Read/Write| SDB
     SDB -->|Trigger| Outbox
     Workers -->|Poll| Outbox
     Workers -->|Publish| Kafka
 
     Kafka -->|Consume| Consumer
     Consumer -->|"Secure Fetch<br/>(mTLS Required)"| SS_mTLS
-    SS_mTLS -->|RLS Query| SDB
+    SS_mTLS -->|RLS Read/Write| SDB
     Consumer -->|Persist| CDB
 ```
 
