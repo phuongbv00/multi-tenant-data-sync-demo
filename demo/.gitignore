@@ -2,3 +2,5 @@ node_modules
 certs/**.crt
 certs/**.key
 certs/**.srl
+.env
+dist/
