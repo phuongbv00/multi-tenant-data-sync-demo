@@ -82,13 +82,13 @@ npm run migrate:all
 Terminal 1 (Source Service):
 
 ```bash
-npm run start:source
+npm run dev:source
 ```
 
 Terminal 2 (Consumer Service):
 
 ```bash
-npm run start:consumer
+npm run dev:consumer
 ```
 
 ## Testing
