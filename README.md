@@ -2,8 +2,6 @@
 
 Tài liệu thiết kế và demo implementation cho hệ thống đồng bộ dữ liệu an toàn giữa các microservices trong môi trường multi-tenant.
 
----
-
 ## 📋 Tổng Quan
 
 Dự án này giải quyết 2 bài toán cốt lõi trong kiến trúc microservices:
