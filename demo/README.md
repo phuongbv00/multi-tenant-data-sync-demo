@@ -91,6 +91,50 @@ npm run test:integration
 
 ## Demo Scenarios
 
+### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant SourceService as Source Service (8001)
+    participant SourceDB as Source DB
+    participant Kafka
+    participant ConsumerService as Consumer Service (8002)
+    participant ConsumerDB as Consumer DB
+
+    Note over Client, ConsumerDB: Scenario: Create User & Sync
+
+    Client->>SourceService: POST /users (TenantID, Admin Role)
+    activate SourceService
+    SourceService->>SourceDB: BEGIN Transaction
+    SourceService->>SourceDB: SET LOCAL app.current_tenant = TenantID
+    SourceService->>SourceDB: INSERT INTO users ...
+    SourceService->>SourceDB: INSERT INTO outbox (Trigger)
+    SourceService->>SourceDB: COMMIT Transaction
+    SourceService-->>Client: 201 Created (User)
+    deactivate SourceService
+
+    Note over SourceService, Kafka: Async Process (Polling)
+
+    loop Every 500ms
+        SourceService->>SourceDB: SELECT * FROM outbox WHERE status='PENDING' FOR UPDATE SKIP LOCKED
+        SourceService->>Kafka: Publish "user-events" (Payload: ID, EventType)
+        SourceService->>SourceDB: UPDATE outbox SET status='PUBLISHED'
+    end
+
+    Kafka->>ConsumerService: Consume Message (UserID)
+    activate ConsumerService
+    ConsumerService->>SourceService: GET /internal/users/:id (M2M Token?)
+    activate SourceService
+    SourceService-->>ConsumerService: 200 OK (User Details)
+    deactivate SourceService
+    ConsumerService->>ConsumerDB: UPSERT INTO users
+    deactivate ConsumerService
+
+    Note over Client, ConsumerDB: End: User exists in both DBs
+```
+
 ### 1. Create User with Tenant Isolation
 
 ```bash
