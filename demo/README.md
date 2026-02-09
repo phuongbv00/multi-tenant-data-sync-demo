@@ -7,30 +7,37 @@ Triển khai thực tế cho 2 LLD documents:
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Source Service (8001)                        │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐  │
-│  │  REST API    │  │   Outbox     │  │   PostgreSQL 16          │  │
-│  │  + Tenant    │──│   Worker     │──│   + RLS Policies         │  │
-│  │  Middleware  │  │  (Polling)   │  │   + Outbox Table         │  │
-│  └──────────────┘  └──────┬───────┘  └──────────────────────────┘  │
-│                           │                                         │
-└───────────────────────────┼─────────────────────────────────────────┘
-                            ▼
-                    ┌───────────────┐
-                    │  Kafka KRaft  │
-                    │  (No ZK)      │
-                    └───────┬───────┘
-                            ▼
-┌───────────────────────────────────────────────────────────────────┐
-│                      Consumer Service (8002)                       │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐  │
-│  │   Kafka      │  │  Reference   │  │   Local Cache DB       │  │
-│  │   Consumer   │──│  API Client  │──│   (user_cache table)   │  │
-│  │              │  │  (Retry)     │  │                        │  │
-│  └──────────────┘  └──────────────┘  └────────────────────────┘  │
-└───────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Client[Client]
+    Consumer[Consumer Service :8002]
+
+    subgraph SourceSystem["Source System (Dual-Port)"]
+        SS_TLS["TLS Port :8001<br/>(Public - User Token Auth)"]
+        SS_mTLS["mTLS Port :8441<br/>(Public - Client Cert Required)"]
+        SDB[(Source DB)]
+        Outbox[Outbox Table]
+        Workers[Outbox Worker]
+    end
+
+    subgraph Infra[Infrastructure]
+        Kafka{Kafka}
+    end
+
+    subgraph ConsumerSystem[Consumer System]
+        CDB[(Consumer DB)]
+    end
+
+    Client -->|"REST API<br/>(User Token)"| SS_TLS
+    SS_TLS -->|Read/Write| SDB
+    SDB -->|Trigger| Outbox
+    Workers -->|Poll| Outbox
+    Workers -->|Publish| Kafka
+
+    Kafka -->|Consume| Consumer
+    Consumer -->|"Secure Fetch<br/>(mTLS Required)"| SS_mTLS
+    SS_mTLS -->|RLS Query| SDB
+    Consumer -->|Persist| CDB
 ```
 
 ## Quick Start
@@ -42,26 +49,37 @@ cd demo
 docker-compose up -d
 ```
 
-### 2. Generate mTLS Certificates
+### 2. Generate mTLS Certificates (Required)
+
+mTLS certificates are **required** for S2S communication:
 
 ```bash
 chmod +x demo/certs/gen-certs.sh
 ./demo/certs/gen-certs.sh
 ```
 
-### 3. Install Dependencies
+The generated certificates enable secure communication between Consumer Service and Source Service's internal API on port 8441.
+
+### 3. Create Environment Files
+
+```bash
+cp source-service/.env.example source-service/.env
+cp consumer-service/.env.example consumer-service/.env
+```
+
+### 4. Install Dependencies
 
 ```bash
 npm run install:all
 ```
 
-### 4. Run Migrations
+### 5. Run Migrations
 
 ```bash
 npm run migrate:all
 ```
 
-### 5. Start Services
+### 6. Start Services
 
 Terminal 1 (Source Service):
 
@@ -97,51 +115,55 @@ npm run test:integration
 sequenceDiagram
     autonumber
     participant Client
-    participant SourceService as Source Service (8001)
+    participant TLS as Source :8001 (TLS)
+    participant mTLS as Source :8441 (mTLS)
     participant SourceDB as Source DB
     participant Kafka
-    participant ConsumerService as Consumer Service (8002)
+    participant Consumer as Consumer :8002
     participant ConsumerDB as Consumer DB
 
-    Note over Client, ConsumerDB: Scenario: Create User & Sync
+    Note over Client, ConsumerDB: Scenario: Create User & Sync via Dual-Port Architecture
 
-    Client->>SourceService: POST /users (TenantID, Admin Role)
-    activate SourceService
-    SourceService->>SourceDB: BEGIN Transaction
-    SourceService->>SourceDB: SET LOCAL app.current_tenant = TenantID
-    SourceService->>SourceDB: INSERT INTO users ...
-    SourceService->>SourceDB: INSERT INTO outbox (Trigger)
-    SourceService->>SourceDB: COMMIT Transaction
-    SourceService-->>Client: 201 Created (User)
-    deactivate SourceService
+    Client->>TLS: POST /users (User Token + TenantID)
+    activate TLS
+    TLS->>SourceDB: BEGIN Transaction
+    TLS->>SourceDB: SET LOCAL app.current_tenant
+    TLS->>SourceDB: INSERT INTO users
+    TLS->>SourceDB: INSERT INTO outbox (via Trigger)
+    TLS->>SourceDB: COMMIT
+    TLS-->>Client: 201 Created
+    deactivate TLS
 
-    Note over SourceService, Kafka: Async Process (Polling)
+    Note over TLS, Kafka: Outbox Polling (500ms)
 
-    loop Every 500ms
-        SourceService->>SourceDB: SELECT * FROM outbox WHERE status='PENDING' FOR UPDATE SKIP LOCKED
-        SourceService->>Kafka: Publish "user-events" (Payload: ID, EventType)
-        SourceService->>SourceDB: UPDATE outbox SET status='PUBLISHED'
+    loop FOR UPDATE SKIP LOCKED
+        TLS->>SourceDB: SELECT * FROM outbox WHERE status='PENDING'
+        TLS->>Kafka: Publish {entity_id, tenant_id}
+        TLS->>SourceDB: UPDATE outbox SET status='PUBLISHED'
     end
 
-    Kafka->>ConsumerService: Consume Message (UserID)
-    activate ConsumerService
-    ConsumerService->>SourceService: GET /internal/users/:id (M2M Token?)
-    activate SourceService
-    SourceService-->>ConsumerService: 200 OK (User Details)
-    deactivate SourceService
-    ConsumerService->>ConsumerDB: UPSERT INTO users
-    deactivate ConsumerService
+    Kafka->>Consumer: Consume Event
+    activate Consumer
+    Consumer->>mTLS: GET /internal/sync/user/:id (mTLS + TenantID)
+    activate mTLS
+    Note right of mTLS: Client Cert Required!
+    mTLS->>SourceDB: User Query
+    mTLS-->>Consumer: 200 OK (User Data)
+    deactivate mTLS
+    Consumer->>ConsumerDB: UPSERT INTO users
+    deactivate Consumer
 
-    Note over Client, ConsumerDB: End: User exists in both DBs
+    Note over Client, ConsumerDB: ✓ User synced via secure mTLS channel
 ```
 
-### 1. Create User with Tenant Isolation
+### 1. Create User (via TLS Port :8001)
 
 ```bash
-# Create user (tenant: default)
+# Create user via public TLS API
 curl -X POST http://localhost:8001/users \
   -H "Content-Type: application/json" \
   -H "X-Tenant-ID: 00000000-0000-0000-0000-000000000000" \
+  -H "X-User-Role: admin" \
   -d '{"name": "Demo User", "email": "demo@example.com"}'
 ```
 
@@ -152,13 +174,18 @@ docker exec -it demo-postgres psql -U demo -d source_db \
   -c "SELECT id, aggregate_type, event_type, status FROM outbox ORDER BY created_at DESC LIMIT 5;"
 ```
 
-### 3. View Synced Data in Consumer
+### 3. View Synced Data (Consumer fetched via mTLS :8441)
 
 ```bash
 curl http://localhost:8002/cache/users
 ```
 
-### 4. Test Cross-Tenant Block (should fail)
+```bash
+docker exec -it demo-postgres psql -U demo -d consumer_db \
+  -c "SELECT * FROM users;"
+```
+
+### 4. Test Cross-Tenant Block (RLS)
 
 ```bash
 # Try accessing with different tenant - should return empty
@@ -170,20 +197,67 @@ curl http://localhost:8001/users \
 
 | LLD Concept            | Implementation                                 |
 | ---------------------- | ---------------------------------------------- |
-| Checkpoint 1 (Client)  | _(Not in this demo)_                           |
 | Checkpoint 2 (Inbound) | `TenantContextMiddleware.ts`                   |
-| Checkpoint 3 (S2S)     | `InternalSyncController.ts`                    |
+| Checkpoint 3 (S2S)     | `InternalSyncController.ts` + mTLS :8441       |
 | Checkpoint 4 (Queue)   | `UserEventConsumer.ts`                         |
 | Checkpoint 5 (DB)      | RLS Policies in `003_rls_policies.sql`         |
 | Transactional Outbox   | `004_outbox.sql` + Trigger                     |
+| Dual-Port Strategy     | `main.ts` (TLS :8001 + mTLS :8441)             |
 | SKIP LOCKED            | `PgOutboxRepository.fetchPendingWithLock()`    |
 | Reference-Based Sync   | `SyncUserUseCase.ts` + `ReferenceApiClient.ts` |
 
-## Clean Architecture Layers
+## Project Structure
 
 ```
-domain/           # Entities, Repository Interfaces, Value Objects
-application/      # Use Cases, Services, Interfaces
-infrastructure/   # PostgreSQL, Kafka, Workers
-presentation/     # HTTP Controllers, Middleware, Routes
+demo/
+├── docker-compose.yml          # PostgreSQL + Kafka infrastructure
+├── docker/
+│   └── init-scripts/           # DB init scripts (create consumer_db)
+├── certs/                      # mTLS certificates
+│   ├── gen-certs.sh            # Certificate generation script
+│   ├── ca.crt, ca.key          # Root CA
+│   ├── server.crt, server.key  # Source Service (mTLS server)
+│   └── client.crt, client.key  # Consumer Service (mTLS client)
+│
+├── source-service/             # Producer Service (Dual-Port)
+│   └── src/
+│       ├── main.ts             # Entry point (TLS:8001 + mTLS:8441)
+│       ├── domain/             # Entities, Repository Interfaces
+│       │   ├── entities/       # User, OutboxEvent
+│       │   └── repositories/   # IUserRepository, IOutboxRepository
+│       ├── application/        # Use Cases, Services
+│       │   ├── use-cases/      # CreateUserUseCase
+│       │   └── services/       # TenantContextService
+│       ├── infrastructure/     # External Dependencies
+│       │   ├── database/       # PostgresConnection, Repositories, Migrations
+│       │   ├── messaging/      # KafkaPublisher
+│       │   └── workers/        # OutboxPollingWorker
+│       └── presentation/       # HTTP Layer
+│           ├── http/           # Express server, routes
+│           │   ├── controllers/# UserController, InternalSyncController
+│           │   ├── middleware/ # TenantContextMiddleware
+│           │   └── routes/     # Public + Internal routes
+│
+├── consumer-service/           # Consumer Service
+│   └── src/
+│       ├── main.ts             # Entry point (HTTP:8002)
+│       ├── domain/             # CachedUser entity
+│       ├── application/        # SyncUserUseCase
+│       └── infrastructure/
+│           ├── database/       # UsersRepository, Migrations
+│           ├── http/           # ReferenceApiClient (mTLS client)
+│           └── kafka/          # UserEventConsumer
+│
+└── tests/
+    ├── unit/                   # Unit tests
+    └── integration/            # Full sync flow tests
 ```
+
+## Clean Architecture Layers
+
+| Layer             | Responsibility                                 |
+| ----------------- | ---------------------------------------------- |
+| `domain/`         | Entities, Repository Interfaces, Value Objects |
+| `application/`    | Use Cases, Application Services                |
+| `infrastructure/` | PostgreSQL, Kafka, HTTP Clients, Workers       |
+| `presentation/`   | Express Controllers, Middleware, Routes        |

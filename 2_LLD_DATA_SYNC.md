@@ -225,8 +225,7 @@ FOR EACH ROW EXECUTE FUNCTION notify_changes('USER');
 Để tách biệt rõ ràng traffic và chính sách bảo mật, Service nên lắng nghe trên 2 ports (cả 2 đều có thể là Public):
 
 - **TLS Server (e.g., 8080):** Dành cho Inbound traffic từ Client/Gateway. (Xác thực User Token).
-- **mTLS Server (e.g., 8443):** Dành riêng cho tương tác Service-to-Service. **BẮT BUỘC mTLS**.
-  - _Lưu ý: Port này là Public (internet-facing), nhưng được bảo vệ tuyệt đối bởi mTLS. Chỉ những client có Certificate hợp lệ mới có thể kết nối._
+- **mTLS Server (e.g., 8441):** Dành riêng cho traffic Service-to-Service. **BẮT BUỘC mTLS**.
 
 ### B.2 Tạo Root CA & Certificates (OpenSSL)
 
@@ -256,7 +255,7 @@ const https = require("https");
 const http = require("http");
 const fs = require("fs");
 
-// 1. mTLS Server (Public - mTLS Required) - Port 8443
+// 1. mTLS Server (Public - mTLS Required) - Port 8441
 const mtlsOptions = {
   key: fs.readFileSync("server.key"),
   cert: fs.readFileSync("server.crt"),
@@ -279,7 +278,7 @@ https
       res.end("Unauthorized");
     }
   })
-  .listen(8443, () => console.log("mTLS Server running on 8443"));
+  .listen(8441, () => console.log("mTLS Server running on 8441"));
 
 // 2. TLS Server (Standard HTTP/TLS) - Port 8080
 http
@@ -290,4 +289,72 @@ http
     res.end("Public Data");
   })
   .listen(8080, () => console.log("TLS Server running on 8080"));
+```
+
+**Client Side (mTLS Request):**
+
+```javascript
+const https = require("https");
+const fs = require("fs");
+
+// Client Certificate Configuration
+const clientOptions = {
+  hostname: "source-service",
+  port: 8441,
+  path: "/internal/sync/user/u-123",
+  method: "GET",
+  key: fs.readFileSync("client.key"), // Client Private Key
+  cert: fs.readFileSync("client.crt"), // Client Certificate
+  ca: fs.readFileSync("ca.crt"), // CA Certificate (để verify server)
+  rejectUnauthorized: true, // Verify server certificate
+  headers: {
+    "X-Tenant-ID": "org-abc",
+    "X-Consumer-ID": "consumer-service",
+  },
+};
+
+const req = https.request(clientOptions, (res) => {
+  let data = "";
+  res.on("data", (chunk) => (data += chunk));
+  res.on("end", () => {
+    console.log("Response:", JSON.parse(data));
+  });
+});
+
+req.on("error", (e) => {
+  console.error("mTLS Request Failed:", e.message);
+});
+
+req.end();
+```
+
+**Client Side (Axios - Recommended for Production):**
+
+```javascript
+const axios = require("axios");
+const https = require("https");
+const fs = require("fs");
+
+// Create HTTPS Agent with Client Certificate
+const httpsAgent = new https.Agent({
+  key: fs.readFileSync("client.key"),
+  cert: fs.readFileSync("client.crt"),
+  ca: fs.readFileSync("ca.crt"),
+  rejectUnauthorized: true,
+});
+
+// Make mTLS Request
+async function fetchUserFromSource(userId, tenantId) {
+  const response = await axios.get(
+    `https://source-service:8441/internal/sync/user/${userId}`,
+    {
+      httpsAgent,
+      headers: {
+        "X-Tenant-ID": tenantId,
+        "X-Consumer-ID": "consumer-service",
+      },
+    },
+  );
+  return response.data;
+}
 ```

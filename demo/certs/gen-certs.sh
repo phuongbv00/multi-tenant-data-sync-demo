@@ -20,7 +20,7 @@ openssl req -new -x509 -days 3650 -nodes \
 echo "2. Generating Source Service (Server) Certs..."
 openssl req -new -nodes \
   -keyout server.key -out server.csr \
-  -subj "/C=VN/ST=Hanoi/O=Demo/CN=source-service"
+  -subj "/C=VN/ST=Hanoi/O=Demo/CN=localhost"
 
 # 3. Sign Server Certificate with CA
 echo "3. Signing Server Certificate..."
@@ -32,7 +32,7 @@ openssl x509 -req -in server.csr \
 echo "4. Generating Consumer Service (Client) Certs..."
 openssl req -new -nodes \
   -keyout client.key -out client.csr \
-  -subj "/C=VN/ST=Hanoi/O=Demo/CN=consumer-service"
+  -subj "/C=VN/ST=Hanoi/O=Demo/CN=localhost"
 
 # 5. Sign Client Certificate with CA
 echo "5. Signing Client Certificate..."

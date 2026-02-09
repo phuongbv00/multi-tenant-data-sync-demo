@@ -1,5 +1,8 @@
 // Infrastructure: Reference API Client with Retry
 import axios, { AxiosInstance, AxiosError } from "axios";
+import https from "https";
+import fs from "fs";
+import path from "path";
 
 interface UserData {
   id: string;
@@ -11,26 +14,49 @@ interface UserData {
   updatedAt: string;
 }
 
+interface ReferenceApiClientOptions {
+  baseUrl?: string;
+  consumerId?: string;
+  maxRetries?: number;
+  baseDelay?: number;
+  mtlsEnabled?: boolean;
+}
+
 export class ReferenceApiClient {
   private client: AxiosInstance;
   private consumerId: string;
   private maxRetries: number;
   private baseDelay: number;
 
-  constructor(
-    baseUrl: string = "http://localhost:8001",
-    consumerId: string = "consumer-service",
-    maxRetries: number = 3,
-    baseDelay: number = 1000,
-  ) {
+  constructor(options: ReferenceApiClientOptions = {}) {
+    const {
+      baseUrl,
+      consumerId = "consumer-service",
+      maxRetries = 3,
+      baseDelay = 1000,
+      mtlsEnabled = true,
+    } = options;
+
     this.consumerId = consumerId;
     this.maxRetries = maxRetries;
     this.baseDelay = baseDelay;
 
-    this.client = axios.create({
+    const axiosConfig: any = {
       baseURL: baseUrl,
       timeout: 5000,
-    });
+    };
+
+    if (mtlsEnabled) {
+      const certsDir = path.resolve(__dirname, "../../../../certs");
+      axiosConfig.httpsAgent = new https.Agent({
+        key: fs.readFileSync(path.join(certsDir, "client.key")),
+        cert: fs.readFileSync(path.join(certsDir, "client.crt")),
+        ca: fs.readFileSync(path.join(certsDir, "ca.crt")),
+        rejectUnauthorized: true,
+      });
+    }
+
+    this.client = axios.create(axiosConfig);
   }
 
   async fetchUser(userId: string, tenantId: string): Promise<UserData | null> {

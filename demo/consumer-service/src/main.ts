@@ -23,10 +23,15 @@ async function main() {
   console.log("Starting Consumer Service...");
 
   // Initialize dependencies
-  const referenceApiClient = new ReferenceApiClient(
-    process.env.SOURCE_SERVICE_URL || "http://localhost:8001",
-    "consumer-service",
-  );
+  // Always use mTLS for S2S communication (port 8441)
+  const sourceBaseUrl =
+    process.env.SOURCE_SERVICE_URL || "https://localhost:8441";
+
+  const referenceApiClient = new ReferenceApiClient({
+    baseUrl: sourceBaseUrl,
+    consumerId: "consumer-service",
+    mtlsEnabled: true, // Always required for S2S
+  });
   const userCacheRepository = new UserCacheRepository(pool);
   const syncUseCase = new SyncUserUseCase(
     referenceApiClient,

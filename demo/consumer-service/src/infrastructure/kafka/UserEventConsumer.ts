@@ -1,14 +1,16 @@
-// Infrastructure: Kafka Consumer
+// Infrastructure: Kafka Consumer with DLQ Support
 import { Kafka, Consumer, EachMessagePayload } from "kafkajs";
 import {
   SyncUserUseCase,
   SyncEvent,
 } from "../../application/use-cases/SyncUserUseCase";
+import { DLQPublisher } from "./DLQPublisher";
 
 export class UserEventConsumer {
   private kafka: Kafka;
   private consumer: Consumer;
   private syncUseCase: SyncUserUseCase;
+  private dlqPublisher: DLQPublisher;
   private running: boolean = false;
 
   constructor(
@@ -21,12 +23,14 @@ export class UserEventConsumer {
       brokers: [process.env.KAFKA_BROKERS || "localhost:9092"],
     });
     this.consumer = this.kafka.consumer({ groupId });
+    this.dlqPublisher = new DLQPublisher();
   }
 
   async start(topic: string = "user-events"): Promise<void> {
     if (this.running) return;
 
     await this.consumer.connect();
+    await this.dlqPublisher.connect();
     await this.consumer.subscribe({ topic, fromBeginning: false });
 
     this.running = true;
@@ -64,7 +68,9 @@ export class UserEventConsumer {
 
       // Validate tenant context (Checkpoint 4 - Consumer Side)
       if (!event.tenantContext.orgId) {
-        console.error("Message missing org_id, rejecting:", event.eventId);
+        const error = new Error(`Message missing org_id: ${event.eventId}`);
+        console.error(error.message);
+        await this.sendToDLQ(topic, partition, message, error, rawEvent);
         return;
       }
 
@@ -79,7 +85,39 @@ export class UserEventConsumer {
         partition,
         offset: message.offset,
       });
-      // In production, would send to DLQ
+
+      // Send failed message to DLQ
+      const rawMessage = message.value
+        ? JSON.parse(message.value.toString())
+        : null;
+      await this.sendToDLQ(
+        topic,
+        partition,
+        message,
+        error as Error,
+        rawMessage,
+      );
+    }
+  }
+
+  private async sendToDLQ(
+    topic: string,
+    partition: number,
+    message: { offset: string; value: Buffer | null },
+    error: Error,
+    rawMessage: any,
+  ): Promise<void> {
+    try {
+      await this.dlqPublisher.sendToDLQ(
+        topic,
+        partition,
+        message.offset,
+        rawMessage,
+        error,
+      );
+    } catch (dlqError) {
+      // Log but don't throw - we don't want DLQ errors to block processing
+      console.error("Failed to send message to DLQ:", dlqError);
     }
   }
 
@@ -87,6 +125,7 @@ export class UserEventConsumer {
     if (!this.running) return;
 
     await this.consumer.disconnect();
+    await this.dlqPublisher.disconnect();
     this.running = false;
     console.log("Kafka consumer stopped");
   }
