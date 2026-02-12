@@ -197,6 +197,33 @@ API cung cấp dữ liệu chi tiết cho consumer đã xác thực.
 - **Unauthorized (401/403):** Critical Error -> Alert ngay lập tức (Sai cấu hình mTLS/Token).
 - **Consistency Check:** Chạy định kỳ job `Reconciliation` để quét lệch pha.
 
+### 6.3 Xử Lý Concurrency (Auto-scaling Safe)
+
+Khi Consumer Service scale lên nhiều instances (Auto-scaling), chúng ta cần đảm bảo:
+
+1.  **Không xử lý trùng lặp (No Duplicate Processing):**
+    - Tất cả Consumer instances phải thuộc cùng một **Consumer Group**.
+    - Message Queue (RabbitMQ/Kafka) sẽ đảm bảo mỗi message chỉ được deliver cho **duy nhất một instance** trong group tại một thời điểm.
+
+2.  **Xử lý Out-of-Order (Final Consistency):**
+    - Dù không bị duplicate, nhưng message có thể đến không đúng thứ tự (do retry hoặc network latency).
+    - Để đảm bảo tính toàn vẹn, áp dụng **Optimistic Locking**:
+      - **Local DB Schema:** Bảng đích phải có cột `last_synced_at` (TIMESTAMP).
+      - **Logic Update:** Chỉ cập nhật nếu `event.timestamp >= current_record.last_synced_at`.
+
+      ```sql
+      -- Ví dụ Upsert an toàn
+      INSERT INTO local_users (id, name, last_synced_at)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (id) DO UPDATE
+      SET
+        name = EXCLUDED.name,
+        last_synced_at = EXCLUDED.last_synced_at
+      WHERE local_users.last_synced_at < EXCLUDED.last_synced_at;
+      ```
+
+      Nếu điều kiện `WHERE` không thỏa mãn (Event cũ hơn dữ liệu hiện tại), Database sẽ bỏ qua lệnh Update.
+
 ## Appendix
 
 ### A. Automation Trigger (Optional for Option 1)
